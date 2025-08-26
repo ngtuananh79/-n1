@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ESP32 Sensor Dashboard (REST)</title>
+
+  <!-- Chart.js (CDN). Nếu mạng không ra internet, tải file chart.umd.min.js về và nhúng cục bộ -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --muted: #94a3b8;
+      --text: #e5e7eb;
+      --accent: #22c55e;
+      --danger: #ef4444;
+      --border: #1f2937;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(135deg, #090e1a 0%, #0b1223 100%);
+      color: var(--text);
+      display: grid; place-items: start center; padding: 24px;
+    }
+    .container { width: 100%; max-width: 1000px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+    h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
+    .card { background: rgba(17,24,39,.8); border: 1px solid var(--border); border-radius: 16px; padding: 16px; backdrop-filter: blur(6px); box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+    @media (min-width: 980px){ .grid { grid-template-columns: 1.2fr .8fr; }}
+    .row { display:flex; gap:12px; flex-wrap: wrap; align-items: center; }
+    .input, .button, select {
+      background: #0b1020; color: var(--text); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 12px; outline: none;
+    }
+    .input:focus { border-color: #334155; }
+    .button { cursor: pointer; transition: .15s transform, .2s opacity; }
+    .button:hover { opacity: .9; }
+    .button.primary { background: #1c253f; border-color: #2a3455; }
+    .badge { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius: 999px; border:1px solid var(--border); background:#0b1020; color:var(--muted); }
+    .dot { width:10px; height:10px; border-radius:999px; background:var(--muted); box-shadow:0 0 0 3px rgba(255,255,255,.04) inset; }
+    .dot.ok { background: var(--accent); }
+    .dot.err { background: var(--danger); }
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap: 6px 10px; }
+    .kv div { padding:6px 0; border-bottom: 1px dashed #1e293b; }
+    .kv div.key { color: var(--muted); }
+    .reading { display:flex; align-items: baseline; gap: 10px; margin: 2px 0 8px; }
+    .reading .val { font-size: 46px; font-weight: 700; }
+    .reading .unit { font-size: 18px; color: var(--muted); }
+    footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
+    .chart-wrap { margin-top: 14px; height: 300px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>ESP32 Sensor Dashboard</h1>
+      <div class="badge" id="statusBadge"><span class="dot" id="statusDot"></span><span id="statusText">Đang nhàn rỗi</span></div>
+    </header>
+
+    <div class="grid">
+      <!-- LEFT: Live reading + chart -->
+      <section class="card" aria-label="Live reading">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+          <strong>Giá trị mới nhất</strong>
+          <small id="lastUpdated" style="color: var(--muted);">Chưa cập nhật</small>
+        </div>
+
+        <div class="reading">
+          <div class="val" id="value">--</div>
+          <div class="unit" id="unit">--</div>
+        </div>
+
+        <div class="kv" id="meta">
+          <div class="key">Thiết bị</div><div id="device">--</div>
+          <div class="key">Độ ẩm</div><div id="humidity">--</div>
+          <div class="key">Thời điểm (thiết bị)</div><div id="ts">--</div>
+          <div class="key">Thời điểm (server)</div><div id="recv_ts">--</div>
+        </div>
+
+        <!-- Chart -->
+        <div class="chart-wrap">
+          <canvas id="sensorChart"></canvas>
+        </div>
+      </section>
+
+      <!-- RIGHT: Settings -->
+      <aside class="card" aria-label="Settings">
+        <strong style="display:block; margin-bottom:10px;">Cài đặt</strong>
+        <div class="row" style="margin-bottom:10px;">
+          <input class="input" id="serverInput" placeholder="http://192.168.1.20:8000" style="flex:1; min-width: 260px;" />
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <input class="input" id="apiKeyInput" placeholder="X-API-Key (nếu có)" />
+          <select id="intervalSelect" class="input">
+            <option value="2000">2s</option>
+            <option value="3000">3s</option>
+            <option value="5000" selected>5s</option>
+            <option value="10000">10s</option>
+          </select>
+          <input class="input" id="windowInput" type="number" min="10" max="1000" value="120" title="Số điểm lịch sử" style="width:110px" />
+          <button class="button primary" id="saveBtn">Lưu</button>
+        </div>
+        <div class="row" style="margin-bottom:8px;">
+          <button class="button" id="pollBtn">Bắt đầu cập nhật</button>
+          <button class="button" id="refreshOnceBtn">Lấy 1 lần</button>
+        </div>
+        <p style="color: var(--muted); font-size: 13px; line-height: 1.4; margin: 8px 0 0;">
+          Gợi ý: phục vụ file này trực tiếp từ FastAPI (đã làm) để không vướng CORS.
+        </p>
+      </aside>
+    </div>
+
+    <footer>
+      Dùng API: <code>/latest?n=&lt;N&gt;</code> và <code>/sensor</code>. • Cài đặt lưu vào LocalStorage.
+    </footer>
+  </div>
+
+  <script>
+    const els = {
+      value: document.getElementById('value'),
+      unit: document.getElementById('unit'),
+      device: document.getElementById('device'),
+      humidity: document.getElementById('humidity'),
+      ts: document.getElementById('ts'),
+      recv_ts: document.getElementById('recv_ts'),
+      lastUpdated: document.getElementById('lastUpdated'),
+      serverInput: document.getElementById('serverInput'),
+      apiKeyInput: document.getElementById('apiKeyInput'),
+      intervalSelect: document.getElementById('intervalSelect'),
+      windowInput: document.getElementById('windowInput'),
+      saveBtn: document.getElementById('saveBtn'),
+      pollBtn: document.getElementById('pollBtn'),
+      refreshOnceBtn: document.getElementById('refreshOnceBtn'),
+      statusDot: document.getElementById('statusDot'),
+      statusText: document.getElementById('statusText'),
+      chartCanvas: document.getElementById('sensorChart'),
+    };
+
+    const state = { timer: null, polling: false, chart: null };
+
+    function fmtTS(sec) {
+      if (!sec) return '--';
+      try { return new Date(sec * 1000).toLocaleString(); } catch { return String(sec); }
+    }
+    function setStatus(ok, text){
+      els.statusDot.classList.remove('ok','err');
+      els.statusText.textContent = text || '';
+      if (ok === true) els.statusDot.classList.add('ok');
+      else if (ok === false) els.statusDot.classList.add('err');
+    }
+
+    function loadSettings(){
+      const server = localStorage.getItem('serverUrl') || 'http://192.168.1.20:8000';
+      const apiKey = localStorage.getItem('apiKey') || '';
+      const interval = localStorage.getItem('interval') || '5000';
+      const win = localStorage.getItem('windowSize') || '120';
+      els.serverInput.value = server;
+      els.apiKeyInput.value = apiKey;
+      els.intervalSelect.value = interval;
+      els.windowInput.value = win;
+    }
+    function saveSettings(){
+      localStorage.setItem('serverUrl', els.serverInput.value.trim());
+      localStorage.setItem('apiKey', els.apiKeyInput.value.trim());
+      localStorage.setItem('interval', els.intervalSelect.value);
+      localStorage.setItem('windowSize', els.windowInput.value);
+    }
+
+    // --- Chart.js ---
+    function initChart(){
+      const ctx = els.chartCanvas.getContext('2d');
+      state.chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [], // sẽ là mốc thời gian (hh:mm:ss)
+          datasets: [
+            { label: 'Nhiệt độ (°C)', data: [], tension: 0.25, pointRadius: 0, yAxisID: 'y' },
+            { label: 'Độ ẩm (%)',    data: [], tension: 0.25, pointRadius: 0, yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            y:  { type: 'linear', position: 'left', title: { display: true, text: '°C' } },
+            y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '%' } },
+            x:  { title: { display: true, text: 'Thời gian' } }
+          },
+          plugins: { legend: { labels: { boxWidth: 10 } } }
+        }
+      });
+    }
+
+    function updateChart(records){
+      if (!state.chart) return;
+      // records là mảng { id, value, unit, humidity, ts, recv_ts } — sắp xếp theo recv_ts tăng dần
+      const labels = [];
+      const temps  = [];
+      const hums   = [];
+      for (const r of records){
+        const ts = r.ts || r.recv_ts;
+        const label = ts ? new Date(ts * 1000).toLocaleTimeString() : '';
+        labels.push(label);
+        temps.push( (r.value ?? null) );
+        hums.push( (r.humidity ?? null) );
+      }
+      state.chart.data.labels = labels;
+      state.chart.data.datasets[0].data = temps;
+      state.chart.data.datasets[1].data = hums;
+      state.chart.update('none');
+    }
+
+    // --- Fetchers ---
+    async function fetchWindow(){
+      const base = els.serverInput.value.trim().replace(/\/$/, '');
+      if (!base) return;
+      const n = parseInt(els.windowInput.value, 10) || 120;
+      const url = `${base}/latest?n=${n}`;
+      setStatus(null, 'Đang lấy dữ liệu…');
+      try {
+        const headers = { 'Accept': 'application/json' };
+        const apiKey = els.apiKeyInput.value.trim();
+        if (apiKey) headers['X-API-Key'] = apiKey;
+
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        // Sắp xếp theo thời gian tăng dần để vẽ mượt
+        const recs = Array.isArray(data) ? [...data].sort((a,b)=> (a.ts||a.recv_ts) - (b.ts||b.recv_ts)) : [];
+
+        // Cập nhật ô “mới nhất”
+        const last = recs[recs.length-1];
+        if (last){
+          els.value.textContent = (last.value ?? '--');
+          els.unit.textContent = (last.unit ?? '--');
+          els.device.textContent = (last.id ?? '--');
+          els.humidity.textContent = (last.humidity ?? '--');
+          els.ts.textContent = fmtTS(last.ts);
+          els.recv_ts.textContent = fmtTS(last.recv_ts);
+          els.lastUpdated.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
+        }
+
+        updateChart(recs);
+        setStatus(true, 'Kết nối OK');
+      } catch (err){
+        console.error(err);
+        setStatus(false, 'Lỗi: ' + err.message);
+      }
+    }
+
+    function startPolling(){
+      if (state.polling) return;
+      state.polling = true;
+      els.pollBtn.textContent = 'Dừng cập nhật';
+      const interval = parseInt(els.intervalSelect.value, 10) || 5000;
+      fetchWindow();
+      state.timer = setInterval(fetchWindow, interval);
+    }
+    function stopPolling(){
+      state.polling = false;
+      els.pollBtn.textContent = 'Bắt đầu cập nhật';
+      if (state.timer) clearInterval(state.timer);
+      state.timer = null;
+    }
+
+    // --- Bindings ---
+    loadSettings();
+    initChart();
+
+    els.saveBtn.addEventListener('click', ()=>{ saveSettings(); fetchWindow(); });
+    els.refreshOnceBtn.addEventListener('click', fetchWindow);
+    els.pollBtn.addEventListener('click', ()=>{ state.polling ? stopPolling() : startPolling(); });
+    els.intervalSelect.addEventListener('change', ()=>{ if (state.polling){ stopPolling(); startPolling(); }});
+    els.windowInput.addEventListener('change', ()=>{ if (state.polling){ fetchWindow(); }});
+
+    // Tùy chọn: tự động bắt đầu cập nhật
+    // startPolling();
+  </script>
+</body>
+</html>

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ESP32 Sensor Dashboard (REST)</title>
+  <style>
+    :root {
+      --bg: #0f172a;        /* slate-900 */
+      --card: #111827;      /* gray-900 */
+      --muted: #94a3b8;     /* slate-400 */
+      --text: #e5e7eb;      /* gray-200 */
+      --accent: #22c55e;    /* green-500 */
+      --danger: #ef4444;    /* red-500 */
+      --border: #1f2937;    /* gray-800 */
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(135deg, #090e1a 0%, #0b1223 100%);
+      color: var(--text);
+      display: grid; place-items: start center;
+      padding: 24px;
+    }
+    .container { width: 100%; max-width: 900px; }
+    header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px;
+    }
+    h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
+    .card {
+      background: rgba(17,24,39,.8);
+      border: 1px solid var(--border);
+      border-radius: 16px; padding: 16px; backdrop-filter: blur(6px);
+      box-shadow: 0 10px 30px rgba(0,0,0,.3);
+    }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+    @media (min-width: 800px){ .grid { grid-template-columns: 1.2fr .8fr; }}
+
+    .row { display:flex; gap:12px; flex-wrap: wrap; align-items: center; }
+    .input, .button, select {
+      background: #0b1020; color: var(--text);
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; outline: none;
+    }
+    .input:focus { border-color: #334155; }
+    .button { cursor: pointer; transition: .15s transform, .2s opacity; }
+    .button:hover { opacity: .9; }
+    .button.primary { background: #1c253f; border-color: #2a3455; }
+    .badge { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius: 999px; border:1px solid var(--border); background:#0b1020; color:var(--muted); }
+    .dot { width:10px; height:10px; border-radius:999px; background:var(--muted); box-shadow:0 0 0 3px rgba(255,255,255,.04) inset; }
+    .dot.ok { background: var(--accent); }
+    .dot.err { background: var(--danger); }
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap: 6px 10px; }
+    .kv div { padding:6px 0; border-bottom: 1px dashed #1e293b; }
+    .kv div.key { color: var(--muted); }
+
+    .reading {
+      display:flex; align-items: baseline; gap: 10px; margin: 2px 0 8px;
+    }
+    .reading .val { font-size: 46px; font-weight: 700; }
+    .reading .unit { font-size: 18px; color: var(--muted); }
+    footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
+    .link { color: #60a5fa; text-decoration: none; }
+    .link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>ESP32 Sensor Dashboard</h1>
+      <div class="badge" id="statusBadge"><span class="dot" id="statusDot"></span><span id="statusText">Đang nhàn rỗi</span></div>
+    </header>
+
+    <div class="grid">
+      <!-- LEFT: Live reading -->
+      <section class="card" aria-label="Live reading">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+          <strong>Giá trị mới nhất</strong>
+          <small id="lastUpdated" style="color: var(--muted);">Chưa cập nhật</small>
+        </div>
+        <div class="reading">
+          <div class="val" id="value">--</div>
+          <div class="unit" id="unit">--</div>
+        </div>
+        <div class="kv" id="meta">
+          <div class="key">Thiết bị</div><div id="device">--</div>
+          <div class="key">Độ ẩm</div><div id="humidity">--</div>
+          <div class="key">Thời điểm (thiết bị)</div><div id="ts">--</div>
+          <div class="key">Thời điểm (server)</div><div id="recv_ts">--</div>
+        </div>
+      </section>
+
+      <!-- RIGHT: Settings -->
+      <aside class="card" aria-label="Settings">
+        <strong style="display:block; margin-bottom:10px;">Cài đặt</strong>
+        <div class="row" style="margin-bottom:10px;">
+          <input class="input" id="serverInput" placeholder="http://192.168.1.20:8000" style="flex:1; min-width: 240px;" />
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <input class="input" id="apiKeyInput" placeholder="X-API-Key (nếu có)" />
+          <select id="intervalSelect" class="input">
+            <option value="2000">2s</option>
+            <option value="3000">3s</option>
+            <option value="5000" selected>5s</option>
+            <option value="10000">10s</option>
+          </select>
+          <button class="button primary" id="saveBtn">Lưu</button>
+        </div>
+        <div class="row" style="margin-bottom:8px;">
+          <button class="button" id="pollBtn">Bắt đầu cập nhật</button>
+          <button class="button" id="refreshOnceBtn">Lấy 1 lần</button>
+        </div>
+        <p style="color: var(--muted); font-size: 13px; line-height: 1.4; margin: 8px 0 0;">
+          Mẹo: để tránh lỗi CORS, hãy mở file này từ cùng máy chủ FastAPI (cùng origin) hoặc thêm CORSMiddleware cho API.
+        </p>
+      </aside>
+    </div>
+
+    <footer>
+      Dùng API: <code>/latest?n=1</code> & <code>/sensor</code>. • Tự động lưu cài đặt vào <em>LocalStorage</em>.
+    </footer>
+  </div>
+
+  <script>
+    const els = {
+      value: document.getElementById('value'),
+      unit: document.getElementById('unit'),
+      device: document.getElementById('device'),
+      humidity: document.getElementById('humidity'),
+      ts: document.getElementById('ts'),
+      recv_ts: document.getElementById('recv_ts'),
+      lastUpdated: document.getElementById('lastUpdated'),
+      serverInput: document.getElementById('serverInput'),
+      apiKeyInput: document.getElementById('apiKeyInput'),
+      intervalSelect: document.getElementById('intervalSelect'),
+      saveBtn: document.getElementById('saveBtn'),
+      pollBtn: document.getElementById('pollBtn'),
+      refreshOnceBtn: document.getElementById('refreshOnceBtn'),
+      statusDot: document.getElementById('statusDot'),
+      statusText: document.getElementById('statusText'),
+    };
+
+    const state = {
+      timer: null,
+      polling: false,
+    };
+
+    function fmtTS(sec) {
+      if (!sec) return '--';
+      try { return new Date(sec * 1000).toLocaleString(); } catch { return String(sec); }
+    }
+
+    function setStatus(ok, text){
+      els.statusDot.classList.remove('ok','err');
+      els.statusText.textContent = text || '';
+      if (ok === true) els.statusDot.classList.add('ok');
+      else if (ok === false) els.statusDot.classList.add('err');
+    }
+
+    function loadSettings(){
+      const server = localStorage.getItem('serverUrl') || 'http://192.168.1.20:8000';
+      const apiKey = localStorage.getItem('apiKey') || '';
+      const interval = localStorage.getItem('interval') || '5000';
+      els.serverInput.value = server;
+      els.apiKeyInput.value = apiKey;
+      els.intervalSelect.value = interval;
+    }
+
+    function saveSettings(){
+      localStorage.setItem('serverUrl', els.serverInput.value.trim());
+      localStorage.setItem('apiKey', els.apiKeyInput.value.trim());
+      localStorage.setItem('interval', els.intervalSelect.value);
+    }
+
+    async function fetchLatest(){
+      const base = els.serverInput.value.trim().replace(/\/$/, '');
+      if (!base) return;
+      const url = `${base}/latest?n=1`;
+      setStatus(null, 'Đang lấy dữ liệu…');
+      try {
+        const headers = { 'Accept': 'application/json' };
+        const apiKey = els.apiKeyInput.value.trim();
+        if (apiKey) headers['X-API-Key'] = apiKey;
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const r = Array.isArray(data) && data.length ? data[0] : null;
+        if (!r) { setStatus(false, 'Không có bản ghi'); return; }
+        els.value.textContent = (r.value ?? '--');
+        els.unit.textContent = (r.unit ?? '--');
+        els.device.textContent = (r.id ?? '--');
+        els.humidity.textContent = (r.humidity ?? '--');
+        els.ts.textContent = fmtTS(r.ts);
+        els.recv_ts.textContent = fmtTS(r.recv_ts);
+        els.lastUpdated.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
+        setStatus(true, 'Kết nối OK');
+      } catch (err){
+        console.error(err);
+        setStatus(false, 'Lỗi: ' + err.message);
+      }
+    }
+
+    function startPolling(){
+      if (state.polling) return;
+      state.polling = true;
+      els.pollBtn.textContent = 'Dừng cập nhật';
+      const interval = parseInt(els.intervalSelect.value, 10) || 5000;
+      fetchLatest();
+      state.timer = setInterval(fetchLatest, interval);
+    }
+
+    function stopPolling(){
+      state.polling = false;
+      els.pollBtn.textContent = 'Bắt đầu cập nhật';
+      if (state.timer) clearInterval(state.timer);
+      state.timer = null;
+    }
+
+    // Event bindings
+    loadSettings();
+    els.saveBtn.addEventListener('click', ()=>{ saveSettings(); fetchLatest(); });
+    els.refreshOnceBtn.addEventListener('click', fetchLatest);
+    els.pollBtn.addEventListener('click', ()=>{ state.polling ? stopPolling() : startPolling(); });
+    els.intervalSelect.addEventListener('change', ()=>{ if (state.polling){ stopPolling(); startPolling(); }});
+
+    // Optional: auto-start polling on load
+    // startPolling();
+  </script>
+</body>
+</html>
